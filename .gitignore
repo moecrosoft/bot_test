@@ -1,0 +1,20 @@
+# Secrets
+.env
+.env.local
+token.json
+sent.json
+
+# Virtual environments
+venv/
+.game/
+game/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS junk
+.DS_Store
