@@ -29,6 +29,7 @@ SENT_FILE = "sent.json"
 GROUPS_BY_TAG = {
     "TECHNICAL": ["-5256210631"],
     "MARKETING": ["-5047168117"],
+    'PARTNERSHIP': ['-5085483131'],
     "ALL": ["-5256210631", "-5047168117"],
 }
 
