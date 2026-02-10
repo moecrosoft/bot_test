@@ -1,6 +1,6 @@
 import os
-import json
 import sys
+import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -8,28 +8,22 @@ import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# ===================== CONFIG =====================
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 SGT = ZoneInfo("Asia/Singapore")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # e.g. "-5256210631"
+GROUP_CHAT_ID_RAW = os.getenv("GROUP_CHAT_ID", "")
+GROUP_IDS = [x.strip() for x in GROUP_CHAT_ID_RAW.split(",") if x.strip()]
 
-# In GitHub Actions this file will NOT persist between runs,
-# so we treat it as "best effort" only for local/manual testing.
-SENT_FILE = "sent.json"
-# ==================================================
-
-
-# ---- Write Google creds from GitHub Actions secrets (if provided) ----
 if os.getenv("CREDENTIALS_JSON") and not os.path.exists("credentials.json"):
     with open("credentials.json", "w", encoding="utf-8") as f:
         f.write(os.getenv("CREDENTIALS_JSON"))
 
-if os.getenv("TOKEN_JSON") and not os.path.exists("token.json"):
+if os.getenv("GOOGLE_TOKEN_JSON") and not os.path.exists("token.json"):
     with open("token.json", "w", encoding="utf-8") as f:
-        f.write(os.getenv("TOKEN_JSON"))
-# ---------------------------------------------------------------------
+        f.write(os.getenv("GOOGLE_TOKEN_JSON"))
+
+SENT_FILE = "sent.json"
 
 
 def load_sent() -> set[str]:
@@ -45,12 +39,17 @@ def save_sent(sent: set[str]) -> None:
         json.dump(sorted(list(sent)), f)
 
 
-def tg_send(text: str) -> None:
+def tg_send(chat_id: str, text: str) -> None:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(url, json={"chat_id": GROUP_CHAT_ID, "text": text}, timeout=20)
+    r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=20)
     data = r.json()
     if not data.get("ok"):
-        print("Telegram error:", data)
+        raise RuntimeError(f"Telegram error for {chat_id}: {data}")
+
+
+def tg_broadcast(text: str) -> None:
+    for gid in GROUP_IDS:
+        tg_send(gid, text)
 
 
 def get_calendar_service():
@@ -59,13 +58,12 @@ def get_calendar_service():
 
 
 def nice_time(dt: datetime) -> str:
-    # Example: "6:50PM" (no leading 0)
     return dt.strftime("%I:%M%p").lstrip("0")
 
 
 def format_event_message(ev: dict, *, is_test: bool) -> str:
     title = ev.get("summary", "(No title)")
-    desc = (ev.get("description") or "").strip() or " "
+    desc = (ev.get("description") or "").strip()
     location = (ev.get("location") or "TBC").strip()
 
     start = ev.get("start", {})
@@ -73,12 +71,11 @@ def format_event_message(ev: dict, *, is_test: bool) -> str:
 
     if start.get("dateTime"):
         start_dt = datetime.fromisoformat(start["dateTime"]).astimezone(SGT)
-
-        if end.get("dateTime"):
-            end_dt = datetime.fromisoformat(end["dateTime"]).astimezone(SGT)
-        else:
-            end_dt = start_dt + timedelta(hours=1)
-
+        end_dt = (
+            datetime.fromisoformat(end["dateTime"]).astimezone(SGT)
+            if end.get("dateTime")
+            else start_dt + timedelta(hours=1)
+        )
         date_str = start_dt.strftime("%d %B %Y")
         time_str = f"{nice_time(start_dt)} - {nice_time(end_dt)}"
     else:
@@ -88,9 +85,18 @@ def format_event_message(ev: dict, *, is_test: bool) -> str:
 
     header = "📢 Reminder" if not is_test else "🧪 TEST Reminder"
 
+    if desc:
+        return (
+            f"{header}: {title}\n\n"
+            f"{desc}\n\n"
+            f"🗓 Date: {date_str}\n"
+            f"⏰ Time: {time_str}\n"
+            f"📍 Venue: {location}\n\n"
+            "See you all there 🔥"
+        )
+
     return (
         f"{header}: {title}\n\n"
-        f"{desc}\n\n"
         f"🗓 Date: {date_str}\n"
         f"⏰ Time: {time_str}\n"
         f"📍 Venue: {location}\n\n"
@@ -116,20 +122,19 @@ def list_events_tomorrow(service) -> list[dict]:
 
 
 def run_daily(*, is_test: bool):
-    if not TELEGRAM_TOKEN or not GROUP_CHAT_ID:
-        raise RuntimeError("Missing TELEGRAM_TOKEN or GROUP_CHAT_ID environment variables.")
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("Missing TELEGRAM_TOKEN.")
+    if not GROUP_IDS:
+        raise RuntimeError("Missing GROUP_CHAT_ID (use comma-separated IDs if multiple).")
+    if not os.path.exists("token.json"):
+        raise RuntimeError("token.json not found (GOOGLE_TOKEN_JSON secret missing or not written).")
 
     service = get_calendar_service()
     sent = load_sent()
 
     events = list_events_tomorrow(service)
-
-    # Requirement: if no events tomorrow, send nothing
     if not events:
-        print("No events tomorrow — sending nothing.")
         return
-
-    sent_count = 0
 
     for ev in events:
         ev_id = ev.get("id", "")
@@ -137,14 +142,10 @@ def run_daily(*, is_test: bool):
         start_key = start.get("dateTime") or start.get("date") or ""
         key = f"{ev_id}:{start_key}:T-1"
 
-        # In scheduled mode, we *try* to avoid duplicates locally,
-        # but we DO NOT rely on this in GitHub Actions.
         if not is_test and key in sent:
-            print(f"Skipping (already sent locally): {ev.get('summary')}")
             continue
 
-        tg_send(format_event_message(ev, is_test=is_test))
-        sent_count += 1
+        tg_broadcast(format_event_message(ev, is_test=is_test))
 
         if not is_test:
             sent.add(key)
@@ -152,9 +153,6 @@ def run_daily(*, is_test: bool):
     if not is_test:
         save_sent(sent)
 
-    print(f"Done. Sent {sent_count} reminder(s). Mode={'TEST' if is_test else 'SCHEDULED'}.")
-
 
 if __name__ == "__main__":
-    is_test = "--test" in sys.argv
-    run_daily(is_test=is_test)
+    run_daily(is_test=("--test" in sys.argv))
