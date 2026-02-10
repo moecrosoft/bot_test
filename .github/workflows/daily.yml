@@ -2,8 +2,7 @@ name: Telegram Calendar Daily Digest
 
 on:
   schedule:
-    # Runs daily at 9:00 AM Singapore time (UTC+8) => 1:00 AM UTC
-    - cron: "0 1 * * *"
+    - cron: "0 2 * * *" # 10:00 AM Singapore time (UTC+8)
   workflow_dispatch: {}
 
 jobs:

@@ -10,7 +10,10 @@ from googleapiclient.discovery import build
 TZ = ZoneInfo("Asia/Singapore")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
+
+# Comma-separated list of chat IDs, e.g. "-100111,-100222,-100333"
+GROUP_CHAT_IDS_RAW = os.getenv("GROUP_CHAT_ID", "")
+GROUP_CHAT_IDS = [gid.strip() for gid in GROUP_CHAT_IDS_RAW.split(",") if gid.strip()]
 
 # Paste your local token.json content into this secret
 GOOGLE_TOKEN_JSON = os.getenv("GOOGLE_TOKEN_JSON")
@@ -18,7 +21,8 @@ GOOGLE_TOKEN_JSON = os.getenv("GOOGLE_TOKEN_JSON")
 TOKEN_FILE = "token.json"
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
-# Prevent double-send in the same day (useful if the workflow reruns)
+# Note: On GitHub Actions, files do not persist between runs.
+# This only helps within the same run (still useful if you loop/retry).
 SENT_FILE = "sent_daily.json"
 
 
@@ -27,33 +31,19 @@ def ensure_token_file():
         return
     if not GOOGLE_TOKEN_JSON:
         raise RuntimeError("Missing GOOGLE_TOKEN_JSON env var.")
-    # Validate it's JSON
-    json.loads(GOOGLE_TOKEN_JSON)
+    json.loads(GOOGLE_TOKEN_JSON)  # validate JSON
     with open(TOKEN_FILE, "w", encoding="utf-8") as f:
         f.write(GOOGLE_TOKEN_JSON)
 
 
-def load_sent_days():
-    try:
-        with open(SENT_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
-    except Exception:
-        return set()
-
-
-def save_sent_days(days: set[str]):
-    with open(SENT_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(list(days)), f)
-
-
-def send_telegram(text: str):
+def send_telegram_to_all(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": GROUP_CHAT_ID, "text": text}
-    r = requests.post(url, json=payload, timeout=20)
-    data = r.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Telegram error: {data}")
-    return data
+    for chat_id in GROUP_CHAT_IDS:
+        payload = {"chat_id": chat_id, "text": text}
+        r = requests.post(url, json=payload, timeout=20)
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Telegram error for {chat_id}: {data}")
 
 
 def get_calendar_service():
@@ -61,21 +51,55 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds)
 
 
+def clean_text(s: str, max_len: int = 240) -> str:
+    s = (s or "").strip()
+    s = " ".join(s.split())  # collapse whitespace/newlines
+    if len(s) > max_len:
+        s = s[: max_len - 1].rstrip() + "…"
+    return s
+
+
+def format_event_line(ev: dict, tomorrow_date) -> list[str]:
+    title = ev.get("summary", "(No title)")
+
+    start = ev.get("start", {})
+    is_all_day = "dateTime" not in start
+
+    if is_all_day:
+        time_str = "All day"
+        date_str = tomorrow_date.strftime("%a %d %b %Y")
+    else:
+        st = datetime.fromisoformat(start["dateTime"]).astimezone(TZ)
+        time_str = st.strftime("%I:%M %p")
+        date_str = st.strftime("%a %d %b %Y")
+
+    location = clean_text(ev.get("location", ""), 120)
+    description = clean_text(ev.get("description", ""), 240)
+
+    lines = []
+    lines.append(f"- {title}")
+    lines.append(f"  📅 {date_str}  ⏰ {time_str}")
+
+    if location:
+        lines.append(f"  📍 {location}")
+
+    if description:
+        lines.append(f"  📝 {description}")
+
+    return lines
+
+
 def run_once():
-    if not TELEGRAM_TOKEN or not GROUP_CHAT_ID:
-        raise RuntimeError("Set TELEGRAM_TOKEN and GROUP_CHAT_ID env vars.")
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("Set TELEGRAM_TOKEN in GitHub Secrets.")
+    if not GROUP_CHAT_IDS:
+        raise RuntimeError(
+            "Set GROUP_CHAT_ID in GitHub Secrets as comma-separated chat IDs."
+        )
 
     ensure_token_file()
     service = get_calendar_service()
 
-    # Keyed by Singapore date so we only send once per day
-    today_key = datetime.now(TZ).date().isoformat()
-    sent_days = load_sent_days()
-    if today_key in sent_days:
-        print("Already sent today's digest. Exiting.")
-        return
-
-    # Tomorrow: 00:00 to next day 00:00 in SG time
     tomorrow = datetime.now(TZ).date() + timedelta(days=1)
     start_dt = datetime.combine(tomorrow, dtime(0, 0), tzinfo=TZ)
     end_dt = start_dt + timedelta(days=1)
@@ -84,36 +108,29 @@ def run_once():
         calendarId="primary",
         timeMin=start_dt.isoformat(),
         timeMax=end_dt.isoformat(),
-        singleEvents=True,     # expands recurring events
+        singleEvents=True,  # expands recurring events
         orderBy="startTime",
         maxResults=200,
     ).execute()
 
     events = events_result.get("items", [])
 
-    # Build message
     if not events:
-        msg = f"📅 Tomorrow ({tomorrow.strftime('%a %d %b')}): No events."
-    else:
-        lines = [f"📅 Tomorrow ({tomorrow.strftime('%a %d %b')}):"]
-        for ev in events:
-            title = ev.get("summary", "(No title)")
-            s = ev.get("start", {})
-            if "dateTime" in s:
-                st = datetime.fromisoformat(s["dateTime"]).astimezone(TZ)
-                tstr = st.strftime("%I:%M %p")
-            else:
-                # All-day event
-                tstr = "All day"
-            lines.append(f"- {tstr} — {title}")
-        msg = "\n".join(lines)
+        msg = f"📅 Tomorrow ({tomorrow.strftime('%a %d %b %Y')}): No events."
+        send_telegram_to_all(msg)
+        print("Sent: no events")
+        return
 
-    send_telegram(msg)
+    header = f"📅 Tomorrow ({tomorrow.strftime('%a %d %b %Y')}) — {len(events)} event(s):"
+    body_lines = [header, ""]
 
-    # Mark as sent today
-    sent_days.add(today_key)
-    save_sent_days(sent_days)
-    print("Sent tomorrow digest.")
+    for ev in events:
+        body_lines.extend(format_event_line(ev, tomorrow))
+        body_lines.append("")  # blank line between events
+
+    msg = "\n".join(body_lines).strip()
+    send_telegram_to_all(msg)
+    print(f"Sent digest to {len(GROUP_CHAT_IDS)} chat(s).")
 
 
 if __name__ == "__main__":
