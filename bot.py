@@ -25,6 +25,14 @@ if os.getenv("GOOGLE_TOKEN_JSON") and not os.path.exists("token.json"):
 
 SENT_FILE = "sent.json"
 
+GROUPS_BY_TAG = {
+    "TECHNICAL": ["-5256210631"],
+    "MARKETING": ["-5047168117"],
+    "ALL": ["-5256210631", "-5047168117"],
+}
+
+DEFAULT_GROUPS = GROUP_IDS
+
 
 def load_sent() -> set[str]:
     try:
@@ -47,8 +55,8 @@ def tg_send(chat_id: str, text: str) -> None:
         raise RuntimeError(f"Telegram error for {chat_id}: {data}")
 
 
-def tg_broadcast(text: str) -> None:
-    for gid in GROUP_IDS:
+def tg_send_many(chat_ids: list[str], text: str) -> None:
+    for gid in chat_ids:
         tg_send(gid, text)
 
 
@@ -61,8 +69,24 @@ def nice_time(dt: datetime) -> str:
     return dt.strftime("%I:%M%p").lstrip("0")
 
 
+def pick_target_groups(ev: dict) -> list[str]:
+    title = (ev.get("summary") or "").strip().upper()
+    for tag, groups in GROUPS_BY_TAG.items():
+        if f"[{tag}]" in title:
+            return groups
+    return DEFAULT_GROUPS
+
+
+def clean_title(title: str) -> str:
+    t = title.strip()
+    for tag in GROUPS_BY_TAG.keys():
+        t = t.replace(f"[{tag}]", "").replace(f"[{tag.lower()}]", "")
+    return " ".join(t.split()).strip() or "(No title)"
+
+
 def format_event_message(ev: dict, *, is_test: bool) -> str:
-    title = ev.get("summary", "(No title)")
+    raw_title = ev.get("summary", "(No title)")
+    title = clean_title(raw_title)
     desc = (ev.get("description") or "").strip()
     location = (ev.get("location") or "TBC").strip()
 
@@ -122,7 +146,7 @@ def list_events_tomorrow(service) -> list[dict]:
 
 
 def run_daily(*, is_test: bool):
-    if not TELEGRAM_TOKEN:
+    if not TELELEGRAM_TOKEN:
         raise RuntimeError("Missing TELEGRAM_TOKEN.")
     if not GROUP_IDS:
         raise RuntimeError("Missing GROUP_CHAT_ID (use comma-separated IDs if multiple).")
@@ -145,7 +169,9 @@ def run_daily(*, is_test: bool):
         if not is_test and key in sent:
             continue
 
-        tg_broadcast(format_event_message(ev, is_test=is_test))
+        msg = format_event_message(ev, is_test=is_test)
+        targets = pick_target_groups(ev)
+        tg_send_many(targets, msg)
 
         if not is_test:
             sent.add(key)
