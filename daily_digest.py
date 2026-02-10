@@ -1,53 +1,81 @@
 import os
 import json
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# ===== Settings =====
-TZ = ZoneInfo("Asia/Singapore")
-
+# ===================== CONFIG =====================
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-TOKEN_FILE = "token.json"
+SGT = ZoneInfo("Asia/Singapore")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Comma-separated list, e.g. "-1001111,-1002222"
+# Comma-separated list supported: "-5256210631,-1001234567890"
 GROUP_CHAT_IDS_RAW = os.getenv("GROUP_CHAT_ID", "")
 GROUP_CHAT_IDS = [x.strip() for x in GROUP_CHAT_IDS_RAW.split(",") if x.strip()]
 
-# This should be the full contents of token.json, stored in GitHub Secrets
-GOOGLE_TOKEN_JSON = os.getenv("GOOGLE_TOKEN_JSON")
+SENT_FILE = "sent.json"
+TOKEN_FILE = "token.json"
+# =================================================
 
 
 def ensure_token_file() -> None:
     """
-    GitHub Actions runner doesn't have token.json unless we create it.
-    We store token.json contents inside a GitHub Secret (GOOGLE_TOKEN_JSON),
-    then write it to token.json at runtime.
+    Creates token.json at runtime from env vars (for GitHub Actions / Render),
+    so you never commit/push token.json.
     """
     if os.path.exists(TOKEN_FILE):
         return
 
-    if not GOOGLE_TOKEN_JSON:
-        raise RuntimeError("Missing GOOGLE_TOKEN_JSON secret/env var.")
+    # Prefer GOOGLE_TOKEN_JSON (GitHub Secrets), fallback to TOKEN_JSON (older name)
+    token_raw = os.getenv("GOOGLE_TOKEN_JSON") or os.getenv("TOKEN_JSON")
+    if not token_raw:
+        raise RuntimeError(
+            "Missing GOOGLE_TOKEN_JSON (recommended) or TOKEN_JSON env var. "
+            "Put your token.json contents into a GitHub Secret and pass it in."
+        )
 
-    # Validate JSON to catch copy/paste mistakes early
-    json.loads(GOOGLE_TOKEN_JSON)
+    # Validate JSON (catches copy/paste mistakes early)
+    json.loads(token_raw)
 
     with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-        f.write(GOOGLE_TOKEN_JSON)
+        f.write(token_raw)
+
+
+def load_sent() -> set[str]:
+    try:
+        with open(SENT_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+
+def save_sent(sent: set[str]) -> None:
+    with open(SENT_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(list(sent)), f)
+
+
+def send_telegram(text: str) -> None:
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    for chat_id in GROUP_CHAT_IDS:
+        payload = {"chat_id": chat_id, "text": text}
+        r = requests.post(url, json=payload, timeout=20)
+        data = r.json()
+        if not data.get("ok"):
+            print(f"Telegram error for {chat_id}:", data)
 
 
 def get_calendar_service():
+    ensure_token_file()
     creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
     return build("calendar", "v3", credentials=creds)
 
 
-def clean_text(s: str, max_len: int) -> str:
+def clean_text(s: str, max_len: int = 400) -> str:
     s = (s or "").strip()
     s = " ".join(s.split())  # collapse whitespace/newlines
     if len(s) > max_len:
@@ -55,89 +83,96 @@ def clean_text(s: str, max_len: int) -> str:
     return s
 
 
-def send_telegram_to_all(message: str) -> None:
-    if not TELEGRAM_TOKEN:
-        raise RuntimeError("Missing TELEGRAM_TOKEN secret/env var.")
-    if not GROUP_CHAT_IDS:
-        raise RuntimeError("Missing GROUP_CHAT_ID secret/env var (comma-separated list).")
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    for chat_id in GROUP_CHAT_IDS:
-        payload = {"chat_id": chat_id, "text": message}
-        r = requests.post(url, json=payload, timeout=20)
-        data = r.json()
-        if not data.get("ok"):
-            raise RuntimeError(f"Telegram error for chat_id={chat_id}: {data}")
-
-
-def format_event(ev: dict, fallback_date) -> str:
+def format_event_message(ev: dict) -> str:
     title = ev.get("summary", "(No title)")
+    desc = clean_text(ev.get("description", ""), 500)
+    location = clean_text(ev.get("location", ""), 120) or "TBC"
 
     start = ev.get("start", {})
-    if "dateTime" in start:
-        st = datetime.fromisoformat(start["dateTime"]).astimezone(TZ)
-        date_str = st.strftime("%a %d %b %Y")
-        time_str = st.strftime("%I:%M %p")
+    end = ev.get("end", {})
+
+    start_dt_raw = start.get("dateTime")
+    end_dt_raw = end.get("dateTime")
+
+    if start_dt_raw:  # timed event
+        start_dt = datetime.fromisoformat(start_dt_raw).astimezone(SGT)
+        end_dt = datetime.fromisoformat(end_dt_raw).astimezone(SGT) if end_dt_raw else None
+
+        date_str = start_dt.strftime("%d %B %Y")
+        if end_dt:
+            time_str = f"{start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')}"
+        else:
+            time_str = start_dt.strftime("%I:%M %p")
     else:
-        # All-day event
-        date_str = fallback_date.strftime("%a %d %b %Y")
+        # all-day event
+        date_only = datetime.fromisoformat(start.get("date")).date()
+        date_str = date_only.strftime("%d %B %Y")
         time_str = "All day"
 
-    location = clean_text(ev.get("location", ""), 120)
-    description = clean_text(ev.get("description", ""), 300)
+    msg = (
+        f"📢 Reminder: {title}\n\n"
+        f"{desc}\n\n"
+        f"🗓 Date: {date_str}\n"
+        f"⏰ Time: {time_str}\n"
+        f"📍 Venue: {location}\n\n"
+        "See you all there 🔥"
+    )
 
-    lines = [
-        f"- {title}",
-        f"  📅 {date_str}  ⏰ {time_str}",
-    ]
-
-    if location:
-        lines.append(f"  📍 {location}")
-
-    if description:
-        lines.append(f"  📝 {description}")
-
-    return "\n".join(lines)
+    return msg
 
 
-def run_daily_digest() -> None:
-    ensure_token_file()
-    service = get_calendar_service()
+def list_events_tomorrow(service) -> list[dict]:
+    now = datetime.now(SGT)
 
-    # Tomorrow window in Singapore time: 00:00 to next day 00:00
-    tomorrow = datetime.now(TZ).date() + timedelta(days=1)
-    start_dt = datetime.combine(tomorrow, dtime(0, 0), tzinfo=TZ)
-    end_dt = start_dt + timedelta(days=1)
+    # Window = tomorrow in Singapore time
+    start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
 
     events_result = service.events().list(
         calendarId="primary",
-        timeMin=start_dt.isoformat(),
-        timeMax=end_dt.isoformat(),
-        singleEvents=True,     # expands recurring events
+        timeMin=start.astimezone(timezone.utc).isoformat(),
+        timeMax=end.astimezone(timezone.utc).isoformat(),
+        singleEvents=True,
         orderBy="startTime",
-        maxResults=200,
+        maxResults=50,
     ).execute()
 
-    events = events_result.get("items", [])
+    return events_result.get("items", [])
+
+
+def run_daily_reminders():
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("Set TELEGRAM_TOKEN.")
+    if not GROUP_CHAT_IDS:
+        raise RuntimeError("Set GROUP_CHAT_ID (comma-separated allowed).")
+
+    service = get_calendar_service()
+    sent = load_sent()
+
+    events = list_events_tomorrow(service)
 
     if not events:
-        msg = f"📅 Tomorrow ({tomorrow.strftime('%a %d %b %Y')}): No events."
-        send_telegram_to_all(msg)
-        print("Sent digest (no events).")
-        return
-
-    header = f"📅 Tomorrow ({tomorrow.strftime('%a %d %b %Y')}) — {len(events)} event(s):"
-    parts = [header, ""]
+        print("No events tomorrow — sending nothing.")
+        return  # sends NOTHING
 
     for ev in events:
-        parts.append(format_event(ev, tomorrow))
-        parts.append("")  # blank line between events
+        ev_id = ev.get("id", "")
+        start = ev.get("start", {})
+        start_key = start.get("dateTime") or start.get("date") or ""
 
-    msg = "\n".join(parts).strip()
-    send_telegram_to_all(msg)
-    print(f"Sent digest to {len(GROUP_CHAT_IDS)} chat(s).")
+        key = f"{ev_id}:{start_key}:T-1"
+
+        if key in sent:
+            continue  # already reminded (note: on GitHub Actions, this file won't persist)
+
+        msg = format_event_message(ev)
+        send_telegram(msg)
+
+        sent.add(key)
+
+    save_sent(sent)
+    print(f"Sent reminders for {len(events)} event(s) tomorrow.")
 
 
 if __name__ == "__main__":
-    run_daily_digest()
+    run_daily_reminders()
