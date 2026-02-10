@@ -3,6 +3,7 @@
 .env.local
 token.json
 sent.json
+credentials.json
 
 # Virtual environments
 venv/
