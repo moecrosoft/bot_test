@@ -15,12 +15,13 @@ SGT = ZoneInfo("Asia/Singapore")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # e.g. "-5256210631"
 
+# In GitHub Actions this file will NOT persist between runs,
+# so we treat it as "best effort" only for local/manual testing.
 SENT_FILE = "sent.json"
 # ==================================================
 
 
-# ---- Render support: write Google creds from env if provided ----
-# Put the full JSON contents into Render env vars: CREDENTIALS_JSON and TOKEN_JSON
+# ---- Write Google creds from GitHub Actions secrets (if provided) ----
 if os.getenv("CREDENTIALS_JSON") and not os.path.exists("credentials.json"):
     with open("credentials.json", "w", encoding="utf-8") as f:
         f.write(os.getenv("CREDENTIALS_JSON"))
@@ -28,7 +29,7 @@ if os.getenv("CREDENTIALS_JSON") and not os.path.exists("credentials.json"):
 if os.getenv("TOKEN_JSON") and not os.path.exists("token.json"):
     with open("token.json", "w", encoding="utf-8") as f:
         f.write(os.getenv("TOKEN_JSON"))
-# ----------------------------------------------------------------
+# ---------------------------------------------------------------------
 
 
 def load_sent() -> set[str]:
@@ -58,23 +59,21 @@ def get_calendar_service():
 
 
 def nice_time(dt: datetime) -> str:
-    # Example output: "6:50PM" (no leading 0)
+    # Example: "6:50PM" (no leading 0)
     return dt.strftime("%I:%M%p").lstrip("0")
 
 
 def format_event_message(ev: dict, *, is_test: bool) -> str:
     title = ev.get("summary", "(No title)")
-    desc = (ev.get("description") or "").strip()
+    desc = (ev.get("description") or "").strip() or " "
     location = (ev.get("location") or "TBC").strip()
 
     start = ev.get("start", {})
     end = ev.get("end", {})
 
-    # Timed event
     if start.get("dateTime"):
         start_dt = datetime.fromisoformat(start["dateTime"]).astimezone(SGT)
 
-        # end.dateTime is usually present; if not, assume +1 hour
         if end.get("dateTime"):
             end_dt = datetime.fromisoformat(end["dateTime"]).astimezone(SGT)
         else:
@@ -83,12 +82,10 @@ def format_event_message(ev: dict, *, is_test: bool) -> str:
         date_str = start_dt.strftime("%d %B %Y")
         time_str = f"{nice_time(start_dt)} - {nice_time(end_dt)}"
     else:
-        # All-day event
         date_only = datetime.fromisoformat(start["date"]).date()
         date_str = date_only.strftime("%d %B %Y")
         time_str = "All day"
 
-    # Optional label so you can tell test runs apart
     header = "📢 Reminder" if not is_test else "🧪 TEST Reminder"
 
     return (
@@ -119,10 +116,6 @@ def list_events_tomorrow(service) -> list[dict]:
 
 
 def run_daily(*, is_test: bool):
-    """
-    Scheduled (default): prevents duplicates using sent.json
-    Manual test (--test): ALWAYS sends (doesn't touch sent.json)
-    """
     if not TELEGRAM_TOKEN or not GROUP_CHAT_ID:
         raise RuntimeError("Missing TELEGRAM_TOKEN or GROUP_CHAT_ID environment variables.")
 
@@ -142,17 +135,17 @@ def run_daily(*, is_test: bool):
         ev_id = ev.get("id", "")
         start = ev.get("start", {})
         start_key = start.get("dateTime") or start.get("date") or ""
-
         key = f"{ev_id}:{start_key}:T-1"
 
-        # Scheduled run skips if already sent
+        # In scheduled mode, we *try* to avoid duplicates locally,
+        # but we DO NOT rely on this in GitHub Actions.
         if not is_test and key in sent:
+            print(f"Skipping (already sent locally): {ev.get('summary')}")
             continue
 
         tg_send(format_event_message(ev, is_test=is_test))
         sent_count += 1
 
-        # Only record in scheduled mode (tests won't block real reminders)
         if not is_test:
             sent.add(key)
 
