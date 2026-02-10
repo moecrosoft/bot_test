@@ -26,17 +26,12 @@ if os.getenv("GOOGLE_TOKEN_JSON") and not os.path.exists("token.json"):
 
 SENT_FILE = "sent.json"
 
+# Removed "ALL"
 GROUPS_BY_TAG = {
     "TECHNICAL": ["-5256210631"],
     "MARKETING": ["-5047168117"],
     "PARTNERSHIP": ["-5085483131"],
     "SUBCOM": ["-1003783608309"],
-    "ALL": [
-        "-5256210631",
-        "-5047168117",
-        "-5085483131",
-        "-1003783608309",
-    ],
 }
 
 TOPICS_BY_TAG = {
@@ -44,8 +39,10 @@ TOPICS_BY_TAG = {
     "MARKETING": None,
     "PARTNERSHIP": None,
     "SUBCOM": 2,
-    "ALL": None,
 }
+
+DEFAULT_TAG = "SUBCOM"  # If no [TAG] in title, send to SUBCOM
+
 
 def load_sent() -> set[str]:
     try:
@@ -54,9 +51,11 @@ def load_sent() -> set[str]:
     except Exception:
         return set()
 
+
 def save_sent(sent: set[str]) -> None:
     with open(SENT_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(list(sent)), f)
+
 
 def tg_send(chat_id: str, text: str, thread_id: int | None = None) -> None:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -74,31 +73,45 @@ def tg_send(chat_id: str, text: str, thread_id: int | None = None) -> None:
     if not data.get("ok"):
         raise RuntimeError(f"Telegram error for {chat_id}: {data}")
 
+
 def tg_send_many(chat_ids: list[str], text: str, thread_id: int | None = None) -> None:
     for gid in chat_ids:
         tg_send(gid, text, thread_id)
+
 
 def get_calendar_service():
     creds = Credentials.from_authorized_user_file("token.json", SCOPES)
     return build("calendar", "v3", credentials=creds)
 
+
 def nice_time(dt: datetime) -> str:
     return dt.strftime("%I:%M%p").lstrip("0")
 
-def pick_target_groups_and_topic(ev: dict) -> tuple[list[str], int | None] | None:
-    title = (ev.get("summary") or "").strip().upper()
 
+def pick_target_groups_and_topic(ev: dict) -> tuple[list[str], int | None]:
+    """
+    Routing rules:
+    - If title contains [TECHNICAL]/[MARKETING]/[PARTNERSHIP]/[SUBCOM], route to that group/topic
+    - If title contains no [TAG] at all, default to SUBCOM
+    """
+    title = (ev.get("summary") or "").strip()
+
+    # Detect explicit [TAG]
+    upper = title.upper()
     for tag, groups in GROUPS_BY_TAG.items():
-        if f"[{tag}]" in title:
+        if f"[{tag}]" in upper:
             thread_id = TOPICS_BY_TAG.get(tag)
             return groups, thread_id
 
-    return None
+    # If no tag found, send to SUBCOM by default
+    return GROUPS_BY_TAG[DEFAULT_TAG], TOPICS_BY_TAG.get(DEFAULT_TAG)
+
 
 def clean_title(title: str) -> str:
     t = title.strip()
     t = re.sub(r"\[.*?\]", "", t)
     return " ".join(t.split()).strip() or "(No title)"
+
 
 def format_event_message(ev: dict, *, is_test: bool) -> str:
     raw_title = ev.get("summary", "(No title)")
@@ -143,6 +156,7 @@ def format_event_message(ev: dict, *, is_test: bool) -> str:
         "See you all there 🔥"
     )
 
+
 def list_events_tomorrow(service) -> list[dict]:
     now = datetime.now(SGT)
     start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -158,6 +172,7 @@ def list_events_tomorrow(service) -> list[dict]:
     ).execute()
 
     return res.get("items", [])
+
 
 def run_daily(*, is_test: bool):
     if not TELEGRAM_TOKEN:
@@ -181,11 +196,7 @@ def run_daily(*, is_test: bool):
         if not is_test and key in sent:
             continue
 
-        route = pick_target_groups_and_topic(ev)
-        if route is None:
-            continue
-
-        targets, thread_id = route
+        targets, thread_id = pick_target_groups_and_topic(ev)
         msg = format_event_message(ev, is_test=is_test)
         tg_send_many(targets, msg, thread_id)
 
@@ -194,6 +205,7 @@ def run_daily(*, is_test: bool):
 
     if not is_test:
         save_sent(sent)
+
 
 if __name__ == "__main__":
     run_daily(is_test=("--test" in sys.argv))
