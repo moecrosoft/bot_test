@@ -79,8 +79,14 @@ def pick_target_groups(ev: dict) -> list[str]:
 
 def clean_title(title: str) -> str:
     t = title.strip()
+
     for tag in GROUPS_BY_TAG.keys():
-        t = t.replace(f"[{tag}]", "").replace(f"[{tag.lower()}]", "")
+        # Remove patterns like: [TECHNICAL], [technical], [TECHNICAL]  (with spaces)
+        t = t.replace(f"[{tag}]", "")
+        t = t.replace(f"[{tag.lower()}]", "")
+        t = t.replace(f"[{tag}] ", "")
+        t = t.replace(f"[{tag.lower()}] ", "")
+
     return " ".join(t.split()).strip() or "(No title)"
 
 
