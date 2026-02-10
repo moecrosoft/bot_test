@@ -27,10 +27,11 @@ if os.getenv("GOOGLE_TOKEN_JSON") and not os.path.exists("token.json"):
 SENT_FILE = "sent.json"
 
 GROUPS_BY_TAG = {
-    "TECHNICAL": ["-5256210631"],
-    "MARKETING": ["-5047168117"],
-    'PARTNERSHIP': ['-5085483131'],
-    "ALL": ["-5256210631", "-5047168117"],
+    "Technical": ["-5256210631"],
+    "Marketing": ["-5047168117"],
+    'Partnership': ['-5085483131'],
+    'Subcom': ['-5227167070'],
+    "ALL": [""],
 }
 
 DEFAULT_GROUPS = GROUP_IDS
