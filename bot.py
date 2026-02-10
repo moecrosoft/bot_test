@@ -146,7 +146,7 @@ def list_events_tomorrow(service) -> list[dict]:
 
 
 def run_daily(*, is_test: bool):
-    if not TELELEGRAM_TOKEN:
+    if not TELEGRAM_TOKEN:
         raise RuntimeError("Missing TELEGRAM_TOKEN.")
     if not GROUP_IDS:
         raise RuntimeError("Missing GROUP_CHAT_ID (use comma-separated IDs if multiple).")
