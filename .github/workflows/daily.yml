@@ -1,11 +1,8 @@
-name: Telegram Calendar Daily Digest
+name: ITCall Reminder
 
 on:
-  push:
-    branches:
-      - main
   schedule:
-    - cron: "50 4 * * *"
+    - cron: "0 10 * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -22,4 +19,4 @@ jobs:
           GROUP_CHAT_ID: ${{ secrets.GROUP_CHAT_ID }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
           CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
-        run: python daily_digest.py
+        run: python bot.py
