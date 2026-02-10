@@ -39,6 +39,14 @@ GROUPS_BY_TAG = {
     ],
 }
 
+TOPICS_BY_TAG = {
+    "TECHNICAL": None,
+    "MARKETING": None,
+    "PARTNERSHIP": None,
+    "SUBCOM": 2,
+    "ALL": None,
+}
+
 def load_sent() -> set[str]:
     try:
         with open(SENT_FILE, "r", encoding="utf-8") as f:
@@ -50,16 +58,25 @@ def save_sent(sent: set[str]) -> None:
     with open(SENT_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(list(sent)), f)
 
-def tg_send(chat_id: str, text: str) -> None:
+def tg_send(chat_id: str, text: str, thread_id: int | None = None) -> None:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=20)
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+    }
+
+    if thread_id is not None:
+        payload["message_thread_id"] = thread_id
+
+    r = requests.post(url, json=payload, timeout=20)
     data = r.json()
     if not data.get("ok"):
         raise RuntimeError(f"Telegram error for {chat_id}: {data}")
 
-def tg_send_many(chat_ids: list[str], text: str) -> None:
+def tg_send_many(chat_ids: list[str], text: str, thread_id: int | None = None) -> None:
     for gid in chat_ids:
-        tg_send(gid, text)
+        tg_send(gid, text, thread_id)
 
 def get_calendar_service():
     creds = Credentials.from_authorized_user_file("token.json", SCOPES)
@@ -68,14 +85,15 @@ def get_calendar_service():
 def nice_time(dt: datetime) -> str:
     return dt.strftime("%I:%M%p").lstrip("0")
 
-def pick_target_groups(ev: dict) -> list[str] | None:
+def pick_target_groups_and_topic(ev: dict) -> tuple[list[str], int | None] | None:
     title = (ev.get("summary") or "").strip().upper()
 
     for tag, groups in GROUPS_BY_TAG.items():
         if f"[{tag}]" in title:
-            return groups
+            thread_id = TOPICS_BY_TAG.get(tag)
+            return groups, thread_id
 
-    return None  # <-- NO TAG FOUND
+    return None
 
 def clean_title(title: str) -> str:
     t = title.strip()
@@ -163,13 +181,13 @@ def run_daily(*, is_test: bool):
         if not is_test and key in sent:
             continue
 
-        targets = pick_target_groups(ev)
+        route = pick_target_groups_and_topic(ev)
+        if route is None:
+            continue
 
-        if targets is None:
-            continue  # <-- SKIP events with NO TAG
-
+        targets, thread_id = route
         msg = format_event_message(ev, is_test=is_test)
-        tg_send_many(targets, msg)
+        tg_send_many(targets, msg, thread_id)
 
         if not is_test:
             sent.add(key)
