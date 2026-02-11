@@ -25,17 +25,9 @@ SENT_FILE = "sent.json"
 # Put your real chat IDs here
 CALENDAR_ROUTES = {
     "ITC EXCO": {
-        "chat_ids": ["-5256210631"],
-        "thread_id": None,
-    },
-    "ITC SUBCOMM": {
-        "chat_ids": ["-1003783608309"],
-        "thread_id": 2,   # example: send into topic 2
-    },
-    "ITC Technical Dept": {
-        "chat_ids": ["-5047168117"],
-        "thread_id": None,
-    },
+        "chat_ids": ["-1003585417915"],
+        "thread_id": 2,
+    }
 }
 
 # Optional default: if event is in an unmapped calendar, skip it
