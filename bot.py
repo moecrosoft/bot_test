@@ -26,7 +26,7 @@ SENT_FILE = "sent.json"
 CALENDAR_ROUTES = {
     "ITC EXCO": {
         "chat_ids": ["-1003585417915"],
-        "thread_id": 2,
+        "thread_id": 5,
     }
 }
 
