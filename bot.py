@@ -97,7 +97,7 @@ def format_event_message(ev: dict, *, calendar_name: str, is_test: bool) -> str:
 
     header = "🧪 TEST Reminder" if is_test else "📢 Reminder"
 
-    lines = [f"{header}: {title}", f"📁 Calendar: {calendar_name}", ""]
+    lines = [f"{header}: {title}", ""]
     if desc:
         lines += [desc, ""]
     lines += [
