@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -13,35 +12,34 @@ SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 SGT = ZoneInfo("Asia/Singapore")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROUP_CHAT_ID_RAW = os.getenv("GROUP_CHAT_ID", "")
-GROUP_IDS = [x.strip() for x in GROUP_CHAT_ID_RAW.split(",") if x.strip()]
 
-if os.getenv("CREDENTIALS_JSON") and not os.path.exists("credentials.json"):
-    with open("credentials.json", "w", encoding="utf-8") as f:
-        f.write(os.getenv("CREDENTIALS_JSON"))
-
+# token.json written at runtime from GitHub Secret GOOGLE_TOKEN_JSON
 if os.getenv("GOOGLE_TOKEN_JSON") and not os.path.exists("token.json"):
+    json.loads(os.getenv("GOOGLE_TOKEN_JSON"))  # validate
     with open("token.json", "w", encoding="utf-8") as f:
         f.write(os.getenv("GOOGLE_TOKEN_JSON"))
 
 SENT_FILE = "sent.json"
 
-# Removed "ALL"
-GROUPS_BY_TAG = {
-    "TECHNICAL": ["-5256210631"],
-    "MARKETING": ["-5047168117"],
-    "PARTNERSHIP": ["-5085483131"],
-    "SUBCOM": ["-1003783608309"],
+# ✅ Map Google Calendar NAME -> Telegram targets
+# Put your real chat IDs here
+CALENDAR_ROUTES = {
+    "ITC EXCO": {
+        "chat_ids": ["-5256210631"],
+        "thread_id": None,
+    },
+    "ITC SUBCOMM": {
+        "chat_ids": ["-1003783608309"],
+        "thread_id": 2,   # example: send into topic 2
+    },
+    "ITC Technical Dept": {
+        "chat_ids": ["-5047168117"],
+        "thread_id": None,
+    },
 }
 
-TOPICS_BY_TAG = {
-    "TECHNICAL": None,
-    "MARKETING": None,
-    "PARTNERSHIP": None,
-    "SUBCOM": 2,
-}
-
-DEFAULT_TAG = "SUBCOM"  # If no [TAG] in title, send to SUBCOM
+# Optional default: if event is in an unmapped calendar, skip it
+SKIP_UNMAPPED_CALENDARS = True
 
 
 def load_sent() -> set[str]:
@@ -59,12 +57,7 @@ def save_sent(sent: set[str]) -> None:
 
 def tg_send(chat_id: str, text: str, thread_id: int | None = None) -> None:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-    }
-
+    payload = {"chat_id": chat_id, "text": text}
     if thread_id is not None:
         payload["message_thread_id"] = thread_id
 
@@ -75,8 +68,8 @@ def tg_send(chat_id: str, text: str, thread_id: int | None = None) -> None:
 
 
 def tg_send_many(chat_ids: list[str], text: str, thread_id: int | None = None) -> None:
-    for gid in chat_ids:
-        tg_send(gid, text, thread_id)
+    for cid in chat_ids:
+        tg_send(cid, text, thread_id)
 
 
 def get_calendar_service():
@@ -85,37 +78,11 @@ def get_calendar_service():
 
 
 def nice_time(dt: datetime) -> str:
-    return dt.strftime("%I:%M%p").lstrip("0")
+    return dt.strftime("%I:%M %p").lstrip("0")
 
 
-def pick_target_groups_and_topic(ev: dict) -> tuple[list[str], int | None]:
-    """
-    Routing rules:
-    - If title contains [TECHNICAL]/[MARKETING]/[PARTNERSHIP]/[SUBCOM], route to that group/topic
-    - If title contains no [TAG] at all, default to SUBCOM
-    """
-    title = (ev.get("summary") or "").strip()
-
-    # Detect explicit [TAG]
-    upper = title.upper()
-    for tag, groups in GROUPS_BY_TAG.items():
-        if f"[{tag}]" in upper:
-            thread_id = TOPICS_BY_TAG.get(tag)
-            return groups, thread_id
-
-    # If no tag found, send to SUBCOM by default
-    return GROUPS_BY_TAG[DEFAULT_TAG], TOPICS_BY_TAG.get(DEFAULT_TAG)
-
-
-def clean_title(title: str) -> str:
-    t = title.strip()
-    t = re.sub(r"\[.*?\]", "", t)
-    return " ".join(t.split()).strip() or "(No title)"
-
-
-def format_event_message(ev: dict, *, is_test: bool) -> str:
-    raw_title = ev.get("summary", "(No title)")
-    title = clean_title(raw_title)
+def format_event_message(ev: dict, *, calendar_name: str, is_test: bool) -> str:
+    title = (ev.get("summary") or "(No title)").strip()
     desc = (ev.get("description") or "").strip()
     location = (ev.get("location") or "TBC").strip()
 
@@ -136,34 +103,40 @@ def format_event_message(ev: dict, *, is_test: bool) -> str:
         date_str = date_only.strftime("%d %B %Y")
         time_str = "All day"
 
-    header = "📢 Reminder" if not is_test else "🧪 TEST Reminder"
+    header = "🧪 TEST Reminder" if is_test else "📢 Reminder"
 
+    lines = [f"{header}: {title}", f"📁 Calendar: {calendar_name}", ""]
     if desc:
-        return (
-            f"{header}: {title}\n\n"
-            f"{desc}\n\n"
-            f"🗓 Date: {date_str}\n"
-            f"⏰ Time: {time_str}\n"
-            f"📍 Venue: {location}\n\n"
-            "See you all there 🔥"
-        )
-
-    return (
-        f"{header}: {title}\n\n"
-        f"🗓 Date: {date_str}\n"
-        f"⏰ Time: {time_str}\n"
-        f"📍 Venue: {location}\n\n"
-        "See you all there 🔥"
-    )
+        lines += [desc, ""]
+    lines += [
+        f"🗓 Date: {date_str}",
+        f"⏰ Time: {time_str}",
+        f"📍 Venue: {location}",
+        "",
+        "See you all there 🔥",
+    ]
+    return "\n".join(lines).strip()
 
 
-def list_events_tomorrow(service) -> list[dict]:
+def list_calendars(service) -> list[dict]:
+    items: list[dict] = []
+    page_token = None
+    while True:
+        res = service.calendarList().list(pageToken=page_token).execute()
+        items.extend(res.get("items", []))
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+    return items
+
+
+def list_events_tomorrow(service, calendar_id: str) -> list[dict]:
     now = datetime.now(SGT)
     start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
 
     res = service.events().list(
-        calendarId="primary",
+        calendarId=calendar_id,
         timeMin=start.astimezone(timezone.utc).isoformat(),
         timeMax=end.astimezone(timezone.utc).isoformat(),
         singleEvents=True,
@@ -183,25 +156,42 @@ def run_daily(*, is_test: bool):
     service = get_calendar_service()
     sent = load_sent()
 
-    events = list_events_tomorrow(service)
-    if not events:
-        return
+    calendars = list_calendars(service)
 
-    for ev in events:
-        ev_id = ev.get("id", "")
-        start = ev.get("start", {})
-        start_key = start.get("dateTime") or start.get("date") or ""
-        key = f"{ev_id}:{start_key}:T-1"
+    # Build: calendar name -> calendar id
+    name_to_id: dict[str, str] = {}
+    for cal in calendars:
+        name = (cal.get("summary") or "").strip()
+        cid = cal.get("id")
+        if name and cid:
+            name_to_id[name] = cid
 
-        if not is_test and key in sent:
+    # Only process calendars you mapped
+    for cal_name, route in CALENDAR_ROUTES.items():
+        cal_id = name_to_id.get(cal_name)
+        if not cal_id:
+            print(f"⚠️ Calendar not found in calendarList: {cal_name}")
             continue
 
-        targets, thread_id = pick_target_groups_and_topic(ev)
-        msg = format_event_message(ev, is_test=is_test)
-        tg_send_many(targets, msg, thread_id)
+        events = list_events_tomorrow(service, cal_id)
+        if not events:
+            print(f"✅ No events tomorrow for {cal_name}")
+            continue
 
-        if not is_test:
-            sent.add(key)
+        for ev in events:
+            ev_id = ev.get("id", "")
+            start = ev.get("start", {})
+            start_key = start.get("dateTime") or start.get("date") or ""
+            key = f"{cal_id}:{ev_id}:{start_key}:T-1"
+
+            if not is_test and key in sent:
+                continue
+
+            msg = format_event_message(ev, calendar_name=cal_name, is_test=is_test)
+            tg_send_many(route["chat_ids"], msg, route.get("thread_id"))
+
+            if not is_test:
+                sent.add(key)
 
     if not is_test:
         save_sent(sent)
