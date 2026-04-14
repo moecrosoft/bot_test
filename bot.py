@@ -25,8 +25,8 @@ SENT_FILE = "sent.json"
 # Put your real chat IDs here
 CALENDAR_ROUTES = {
     "ITC EXCO": {
-        "chat_ids": ["-1003585417915"],
-        "thread_id": 2,
+        "chat_ids": ["-1002590211642"],
+        "thread_id": 8418,
     },
     
     # "ITC SUBCOMM": {
