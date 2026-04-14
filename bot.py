@@ -35,8 +35,7 @@ CALENDAR_ROUTES = {
     },
 
     "ITC Technical Dept": {
-        "chat_ids": ["-1003214109428"],
-        "thread_id": 1268,
+        "chat_ids": ["-1003214109428"]
     }
 }
 
