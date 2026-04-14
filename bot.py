@@ -29,10 +29,10 @@ CALENDAR_ROUTES = {
         "thread_id": 8418,
     },
     
-    # "ITC SUBCOMM": {
-    #     "chat_ids": ["-1003133268400"],
-    #     "thread_id": 3,
-    # }
+    "ITC SUBCOMM": {
+        "chat_ids": ["-1003133268400"],
+        "thread_id": 3,
+    }
 }
 
 # Optional default: if event is in an unmapped calendar, skip it
