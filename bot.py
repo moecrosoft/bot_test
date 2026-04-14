@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -28,7 +27,8 @@ CALENDAR_ROUTES = {
     "ITC EXCO": {
         "chat_ids": ["-1003585417915"],
         "thread_id": 2,
-    }
+    },
+    
     # "ITC SUBCOMM": {
     #     "chat_ids": ["-1003133268400"],
     #     "thread_id": 3,
@@ -193,57 +193,6 @@ def run_daily(*, is_test: bool):
     if not is_test:
         save_sent(sent)
 
-def cmd_start(chat_id: str, msg: dict) -> None:
-    text = (
-        "👋 Hi! I'm ITC EXCO Bot.\n\n"
-        "I send automatic reminders for upcoming events.\n\n"
-        "For anything else, contact Imeow."
-    )
-    tg_send(chat_id, text)
-
-COMMANDS = {
-    "/start": cmd_start,
-}
-
-def handle_updates(offset: int | None = None) -> int | None:
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    params = {"timeout": 30, "offset": offset}
-    r = requests.get(url, params=params, timeout=40)
-    updates = r.json().get("result", [])
-
-    for update in updates:
-        offset = update["update_id"] + 1
-        msg = update.get("message", {})
-        text = msg.get("text", "").strip()
-        chat_id = str(msg.get("chat", {}).get("id", ""))
-
-        if not text or not chat_id:
-            continue
-
-        command = text.split()[0].lower()
-        handler = COMMANDS.get(command)
-        if handler:
-            try:
-                handler(chat_id, msg)
-            except Exception as e:
-                print(f"Error handling {command}: {e}")
-                tg_send(chat_id, "⚠️ Something went wrong.")
-
-    return offset
-
-def run_bot() -> None:
-    print("🤖 Bot listening for commands...")
-    offset = None
-    while True:
-        try:
-            offset = handle_updates(offset)
-        except Exception as e:
-            print(f"Polling error: {e}")
-            time.sleep(5)
-
 
 if __name__ == "__main__":
-    if "--bot" in sys.argv:
-        run_bot()
-    else:
-        run_daily(is_test=("--test" in sys.argv))
+    run_daily(is_test=("--test" in sys.argv))
