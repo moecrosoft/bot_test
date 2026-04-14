@@ -193,31 +193,16 @@ def run_daily(*, is_test: bool):
     if not is_test:
         save_sent(sent)
 
-# cmd stands for command
-def cmd_help(chat_id: str, msg: dict) -> None:
+def cmd_start(chat_id: str, msg: dict) -> None:
     text = (
-        "📋 Available commands:\n\n"
-        "/help — Show this message\n"
-        "/about — About this bot\n"
-        "/events — Events this month\n"
-        "/funfact — Random fun fact"
+        "👋 Hi! I'm ITC EXCO Bot.\n\n"
+        "I send automatic reminders for upcoming events.\n\n"
+        "For anything else, contact Imeow."
     )
     tg_send(chat_id, text)
 
-def cmd_about(chat_id: str, msg: dict) -> None:
-    tg_send(chat_id, "ℹ️ About: placeholder")
-
-def cmd_events(chat_id: str, msg: dict) -> None:
-    tg_send(chat_id, "🗓 Events this month: placeholder")
-
-def cmd_funfact(chat_id: str, msg: dict) -> None:
-    tg_send(chat_id, "💡 Fun fact: placeholder")
-
 COMMANDS = {
-    "/help": cmd_help,
-    "/about": cmd_about,
-    "/events": cmd_events,
-    "/funfact": cmd_funfact,
+    "/start": cmd_start,
 }
 
 def handle_updates(offset: int | None = None) -> int | None:
